@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<section name="Workbench">
+	<item key="hasShownOverlayPopupBefore" value="true"/>
+	<section name="java.lang.Class">
+		<list key="findhistory">
+			<item value="JLabel"/>
+			<item value=".6"/>
+			<item value="gbl_waterfallstep"/>
+			<item value="gbl_gain"/>
+			<item value="waterfallstep"/>
+			<item value="gain"/>
+			<item value="sendSweep"/>
+			<item value="send"/>
+			<item value="init"/>
+			<item value=" 20"/>
+		</list>
+	</section>
+</section>
