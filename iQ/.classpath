@@ -27,5 +27,6 @@
 	<classpathentry kind="lib" path="src/libs/libusb4java-1.3.0-win32-x86.jar"/>
 	<classpathentry kind="lib" path="src/libs/libusb4java-1.3.0-win32-x86-64.jar"/>
 	<classpathentry kind="lib" path="src/libs/usb4java-1.3.0.jar"/>
+	<classpathentry kind="lib" path="/home/rctest/eclipse-workspace/pluto.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>

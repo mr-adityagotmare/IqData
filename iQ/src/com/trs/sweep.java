@@ -60,6 +60,10 @@ import jcuda.jcufft.cufftType;
 import jcuda.runtime.JCuda;
 import jcuda.runtime.cudaDeviceProp;
 import jcuda.runtime.cudaEvent_t;
+
+import com.pluto.sdr.*;
+
+
 class DeviceSweepContext {
 
     ScheduledExecutorService scheduler;
@@ -85,8 +89,16 @@ class DeviceSweepContext {
 
 public class sweep implements multiUsbManager.UsbHelperListener{
 
+	PlutoDevice plutodev; 
+	
+	boolean is_pluto_connected = false;
 	
 	int MAX_CYCLES = 100;
+	private Thread rxThread;
+	private volatile boolean rxRunning = false;
+	
+    long segStartFreq;
+    long segEndFreq;
 
 	List<float[]> iqCycles = new ArrayList<>();
 	List<double[]> phaseCycles = new ArrayList<>();
@@ -414,12 +426,373 @@ public class sweep implements multiUsbManager.UsbHelperListener{
         frmTrs.addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
+            	if(is_pluto_connected) plutodev.close();
                 stopAllSweeps();
+                
                 System.out.println("window event");
             }
         });
+        
+        
+        plutodev = new PlutoDevice();
+        
+        plutodev.init("ip:192.168.3.1", 4096);
+        is_pluto_connected = true;
+
+        if (!is_pluto_connected) {
+            System.out.println("Pluto NOT connected");
+        }
+        	         
+    }
+    
+    void genTxSignal() {
+
+        if (!is_pluto_connected) return;
+
+//        if (!plutodev.isConnected()) {
+//            is_pluto_connected = plutodev.reconnect();
+//            if (!is_pluto_connected) return;
+//        }
+
+        plutodev.setTxFrequency(2400000000L);
+        plutodev.setTxSampleRate(1000000L);
+        plutodev.setTxBandwidth(100000L);
+        plutodev.setTxGain(-30);
+
+        int N = 16384;
+
+        float fs = 1_000_000f;
+        float f = 50_000f;   // 50 kHz tone
+
+        ByteBuffer buf = ByteBuffer.allocateDirect(N * 8);
+        buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+        for (int i = 0; i < N; i++) {
+
+            float phase = (float)(2 * Math.PI * f * i / fs);
+
+            float I = 0.8f * (float)Math.cos(phase);
+            float Q = 0.8f * (float)Math.sin(phase);
+
+            buf.putFloat(i * 8, I);
+            buf.putFloat(i * 8 + 4, Q);
+        }
+
+        plutodev.transmit(buf, N);
+    }
+    
+    void stopTxSignal() {
+    	if (!is_pluto_connected) return;
+    	plutodev.stopTx();       // stop DMA
+    	plutodev.disableTx();    // disable RF
+    }
+    public void startRx() {
+
+        if (!is_pluto_connected) {
+            System.out.println("Pluto not connected");
+            return;
+        }
+
+        if (rxRunning) {
+            System.out.println("RX already running");
+            return;
+        }
+
+        // ================= RX CONFIG =================
+        plutodev.setFrequency(3000000000L);   // 3 GHz
+        plutodev.setSampleRate(2000000L);     // 2 MSPS (stable)
+        plutodev.setBandwidth(2000000L);      // 2 MHz
+        plutodev.setGainMode("fast_attack");  // auto gain
+
+        // Start native streaming thread
+        plutodev.startStream();
+
+        rxRunning = true;
+
+        rxThread = new Thread(() -> {
+
+            System.out.println("RX started");
+
+            ByteBuffer buf = plutodev.getBuffer();
+            buf.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+
+            int samples = 4096;   // safer
+            float[] data = new float[samples * 2];
+
+            while (rxRunning) {
+
+                int n = plutodev.read(samples);
+
+
+                buf.position(0);
+
+                int elements = Math.min(n * 2, buf.capacity() / 4);
+
+                for (int i = 0; i < elements; i++) {
+                    data[i] = buf.getFloat();
+                }
+
+                processData(data, elements);
+
+                try { Thread.sleep(1); } catch (Exception e) {}
+            }
+
+            System.out.println("RX stopped");
+
+        });
+
+        rxThread.setName("Pluto-RX-Thread");
+        rxThread.setPriority(Thread.MAX_PRIORITY);
+        rxThread.start();
     }
 
+    public void stopRx() {
+
+        rxRunning = false;
+
+        if (rxThread != null) {
+            try {
+                rxThread.join();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+    }
+    
+    private synchronized void processData(float[] data, int Elements) {
+    	
+
+    	int sample_shift = 2;
+    	int start = sample_shift;
+      	int end = sample_shift + (gbl_sweep_point*4)-1;
+      	int length = end - start +1;
+      	//System.out.println("Index size: " + globalArray.length);
+
+	      	float[] hostIQ = new float[Elements];  // adjust if needed
+	      	System.arraycopy(data, start, hostIQ, 0, Elements);
+	    	
+    	is_processing = true;
+    	int complexSamples = Elements/2;
+    	//float[] hostIQ = processingArray;
+    	
+    	long startNs = System.nanoTime();
+    	 double[] phase = new double[complexSamples];
+    	 
+    	 float[] rearray = new float[complexSamples];
+    	 float[] imgarray = new float[complexSamples];
+	        
+	        for (int i = 0; i < complexSamples  ; i++) {
+	        	
+	        	double re = hostIQ[2 * i];
+	        	rearray[i] = (float) re;
+	        	double im = hostIQ[2 * i + 1];
+	        	imgarray[i] = (float) im;
+	            double phase_val = Math.atan2(re, im);  // -π … +π
+	            
+	            phase[i] = Math.toDegrees(phase_val);
+	             
+	        }
+	        
+        	synchronized (this) {
+        	    if (iqCycles.size() < MAX_CYCLES) {
+        	        iqCycles.add(Arrays.copyOf(rearray, rearray.length));
+        	        iqCycles.add(Arrays.copyOf(imgarray, imgarray.length));
+        	    }
+        	}
+	        
+	      long endNs = System.nanoTime();
+	      long execPhaseNs = endNs- startNs;
+           //System.out.println("Phase Time: " + execPhaseNs + " ns");
+
+	        /* =========================================================
+	           2) Allocate GPU memory + copy
+	           ========================================================= */
+	        Pointer dData = new Pointer();
+	        cudaMalloc(dData, (long) hostIQ.length * Float.BYTES);
+	        
+	        cudaMemcpy(
+	            dData,
+	            Pointer.to(hostIQ),
+	            (long) hostIQ.length * Float.BYTES,
+	            cudaMemcpyHostToDevice
+	        );
+
+	        /* =========================================================
+	           3) FFT plan (C2C)
+	           ========================================================= */
+	        cufftHandle plan = new cufftHandle();
+	        cufftPlan1d(plan, complexSamples, cufftType.CUFFT_C2C, batch_size);
+	        
+	        /* =========================================================
+	           4) Execute FFT + timing
+	           ========================================================= */
+	        //long startNs = System.nanoTime();
+	        cudaEvent_t startT = new cudaEvent_t();
+            cudaEvent_t endT  = new cudaEvent_t();
+
+            cudaEventCreate(startT);
+            cudaEventCreate(endT);
+
+	        cufftExecC2C(plan, dData, dData, CUFFT_FORWARD);
+	        
+	        cudaEventRecord(endT, null);
+            cudaEventSynchronize(endT);
+
+            float[] elapsedMs = new float[1];
+            cudaEventElapsedTime(elapsedMs, startT, endT);
+            
+            //System.out.println("FFT Time : " + elapsedMs[0] + " ns"); 
+            
+            //System.out.println("Total Time : " + df.format(execPhaseNs+ (elapsedMs[0] *1e+6)) + " ns");  
+
+	        //long execNs = 0; //System.nanoTime() - startNs;
+	        
+
+	        /* =========================================================
+	           5) Copy FFT output back
+	           ========================================================= */
+	        float[] fftOut = new float[hostIQ.length];
+
+	        cudaMemcpy(
+	            Pointer.to(fftOut),
+	            dData,
+	            (long) fftOut.length * Float.BYTES,
+	            cudaMemcpyDeviceToHost
+	        );
+	        
+        cufftDestroy(plan);
+        cudaFree(dData);
+        
+        
+	        for (int i = 0; i < fftOut.length; i++) {
+	        	fftOut[i] = Math.abs(fftOut[i]);
+	        }
+	          
+	        /* =========================================================
+	           6) Extract REAL data (N/2) → reinit amp
+	           ========================================================= */
+	        //int half = complexSamples / 2;
+	        int full = complexSamples;
+	        
+	        double[] output = new double[full];
+	
+	        double fADCGain = 20*Math.log10(4096);
+	        double fFFTGain = 20*Math.log10(full);
+	        int n_avg = 1;
+	        double fAveragingGain =
+         10.0 * Math.log10((double) n_avg)
+       + 0.45 * Math.log((double) n_avg) / Math.log(2.0);
+	        
+	        double fUnknownGain = 16.42;
+	        
+	        for (int i = 0; i < full ; i++) {
+	        	
+	        	float re = fftOut[2 * i];
+	        	float im = fftOut[2 * i + 1];
+
+	            // Real-only output
+	            output[i] = (20*Math.log10(Math.sqrt(re*re+im*im))-fADCGain-fFFTGain-fAveragingGain * -1)+fUnknownGain;
+	  
+	        }
+	        
+	        output = trs_app_ConvertSingle2TwoSided(output,complexSamples);
+	        
+
+
+
+	        double[] final_output = new double[gbl_sweep_point];
+	        
+	        int tc = 0;
+	        for(int k = gbl_sweep_point/2; k < (gbl_sweep_point/2)+gbl_sweep_point; k++) {
+	        	
+	        	final_output[tc] = output[k];
+	        	tc++;
+	        	
+	        }
+	        	
+        	int maxindex = findMaxIndex(final_output);
+//        	print(String.valueOf(maxindex));
+	        double phase_degrees = phase[(gbl_sweep_point/2)+maxindex];
+	        
+        	phaseArray[(sample_shift/2) ] = phase_degrees;
+        	
+
+	        
+	        /* =========================================================
+	           7) Stitching logic (unchanged)
+	           ========================================================= */
+	        Integer index = 0;
+	        if (index == null || stitchBuffer == null) return;
+
+	        boolean sweepComplete = stitchBuffer.addPart(
+	                index,
+	                final_output,
+	                phase,
+	                segStartFreq,
+	                segEndFreq
+	        );
+
+	        if (!sweepComplete) return;
+
+	        StitchBuffer.Segment[] segments = stitchBuffer.getSegments();
+	        stitchBuffer.reset();
+
+	        /* =========================================================
+	           8) FPS calculation
+	           ========================================================= */
+	        long maxFrameTimeMs = 0;
+	        String slowestKey = null;
+
+	        for (Map.Entry<String, DeviceSweepContext> e : deviceSweepMap.entrySet()) {
+	            long t = e.getValue().lastFrameTimeMs;
+	            if (t > maxFrameTimeMs) {
+	                maxFrameTimeMs = t;
+	                slowestKey = e.getKey();
+	            }
+	        }
+
+	        double fps = maxFrameTimeMs > 0 ? 1000.0 / maxFrameTimeMs : 0;
+	        //System.out.println("FPS = " + fps);
+
+	        long finalMaxFrameTimeMs = maxFrameTimeMs;
+	        double finalFps = fps;
+
+	        /* =========================================================
+	           9) Build final stitched arrays
+	           ========================================================= */
+	        List<Double> freqList = new ArrayList<>();
+	        List<Double> ampList  = new ArrayList<>();
+	        //List<Double> phaseList  = new ArrayList<>();
+	      
+
+	        for (StitchBuffer.Segment s : segments) {
+	            if (s == null) continue;
+
+	            int bins = s.amp.length;
+	            double step = (s.endFreq - s.startFreq) / (bins - 1);
+
+	            for (int i = 0; i < bins; i++) {
+	                freqList.add(s.startFreq + i * step);
+	                ampList.add(s.amp[i]);
+	                //double degrees = Math.toDegrees(s.phase[i]);
+	                //System.out.println(degrees+" "+s.amp[i]);
+	                //phaseList.add(degrees);
+	            }
+	        }
+
+	        double[] finalFreq = freqList.stream().mapToDouble(Double::doubleValue).toArray();
+	        double[] finalAmp  = ampList.stream().mapToDouble(Double::doubleValue).toArray();
+	        //double[] finalPhase = phaseList.stream().mapToDouble(Double::doubleValue).toArray();
+
+	        /* =========================================================
+	           10) UI update
+	           ========================================================= */
+	        spectrumPanels.get(0).updateSpectrum(finalFreq, finalAmp);
+    }
+    
+    
+    
+    
     public void setListerns() {
     	startBtn.addActionListener(e->sendSweep());
     }
@@ -434,11 +807,14 @@ public class sweep implements multiUsbManager.UsbHelperListener{
     }
     
     int op_counter = 0;
+    
+    
     private void startThreads(String key, DeviceSweepContext ctx) {
         for (int i = 0; i < globalArray.length / 2; i += SAMPLE_SHIFT) {
             final int index = i;  // 'index' can be used within the lambda
 
             Thread thread = new Thread(() -> {
+            	
                 try {
                     if (runningStatus) {
                         long startop = System.currentTimeMillis();
@@ -496,6 +872,7 @@ public class sweep implements multiUsbManager.UsbHelperListener{
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
+                
             });
 
             thread.start();
@@ -767,6 +1144,7 @@ public class sweep implements multiUsbManager.UsbHelperListener{
     }
     
     public void sendSweep() {
+
     	
     	gbl_frequency = Integer.parseInt(startFreq.getText().trim());
     	gbl_start_frequency = Integer.parseInt(startFreq.getText().trim());
@@ -778,7 +1156,21 @@ public class sweep implements multiUsbManager.UsbHelperListener{
 
         offset_counter = 0;
         op_counter = 0;
-    			//    	gbl_sta = Integer.parseInt(startFreq.getText().trim());
+    			//    	gbl_sta = Integer.parseInt(startFreq.getText().trim());\
+         
+    	
+    	
+    	if(is_pluto_connected) {
+    		if (startBtn.getText().equals("START")) {
+    			startRx(); 
+    			startBtn.setText("STOP");
+    		}else {
+    			stopRx();
+    			startBtn.setText("START");
+    		}
+    		
+    		return;
+    	}
 
         if (startBtn.getText().equals("START")) {
 //        	spectrumPanels.get(0).clearMarkers();
@@ -823,6 +1215,9 @@ public class sweep implements multiUsbManager.UsbHelperListener{
 
                 e.getValue().segStartFreq = range[0];
                 e.getValue().segEndFreq   = range[1];
+                
+                segStartFreq = range[0];
+                segEndFreq   = range[1];
             }
 
             for (String key : deviceSweepMap.keySet()) {
@@ -834,6 +1229,7 @@ public class sweep implements multiUsbManager.UsbHelperListener{
             //startThreads();
 
         } else {
+        	stopTxSignal();
 
         	isInitialized = false;
             stopAllSweeps();
