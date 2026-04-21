@@ -21,7 +21,7 @@ public class SpectrumGLPanel extends GLCanvas implements GLEventListener {
 
     private double refLevel = 50;
     static double staticrefLevel = 10;
-    private double dBPerDiv = 10;
+    private double dBPerDiv = 20;
     private int numDiv = 10;
 
     private double minAmp, maxAmp;
