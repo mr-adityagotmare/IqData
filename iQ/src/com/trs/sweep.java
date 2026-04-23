@@ -434,73 +434,8 @@ public class sweep implements multiUsbManager.UsbHelperListener{
     }
     
     int op_counter = 0;
-    private void startThreads(String key, DeviceSweepContext ctx) {
-        for (int i = 0; i < globalArray.length / 2; i += SAMPLE_SHIFT) {
-            final int index = i;  // 'index' can be used within the lambda
-
-            Thread thread = new Thread(() -> {
-                try {
-                    if (runningStatus) {
-                        long startop = System.currentTimeMillis();
-
-                        processData(key, ctx, index);
-
-                        long endop = System.currentTimeMillis();
-
-                        System.out.println("Execution time: " + (endop - startop) + " ms");
-
-                        op_counter++;
-
-                        if (op_counter >= (globalArray.length / 4) - 2) {
-                            runningStatus = false;
-
-                            XYSeries phase_series_new = new XYSeries("Phase Data");
-
-                            if (phase_dataset.getSeriesCount() > 0) {
-                                phase_dataset.removeAllSeries();
-                            }
-
-                            long nonNegativeCount = Arrays.stream(phaseArray)
-                                    .filter(element -> element != -1)
-                                    .count();
-
-                            for (int j = 0; j < nonNegativeCount; j++) {
-                                phase_series_new.add(j + 1, phaseArray[j]);
-                            }
-
-                            if (phase_dataset.getSeriesCount() == 0) {
-                                phase_dataset.addSeries(phase_series_new);
-
-                                synchronized (this) {
-                                    if (phaseCycles.size() < MAX_CYCLES) {
-                                        // Extract phase data from phase_series_new and add to phaseCycles
-                                        double[] phaseData = new double[phase_series_new.getItemCount()];
-
-                                        for (int p = 0; p < phase_series_new.getItemCount(); p++) {  // Fix variable name from 'i' to 'p'
-                                            phaseData[p] = phase_series_new.getY(p).doubleValue();  // Assuming getY() returns the phase value
-                                        }
-
-                                        phaseCycles.add(phaseData);  // Add phase data to phaseCycles
-                                    }
-                                }
-                            }
-
-                            Arrays.fill(phaseArray, -1);
-
-                            offset_counter = 0;
-                            op_counter = 0;
-
-                            runningStatus = true;
-                        }
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            });
-
-            thread.start();
-        }
-    }
+    
+    
     
 //    private void startThreads(String key, DeviceSweepContext ctx) {
 //    	
@@ -947,6 +882,75 @@ public class sweep implements multiUsbManager.UsbHelperListener{
     //private int complexSamples = 2048;
     DecimalFormat df = new DecimalFormat("#.0000");
     
+
+    private void startThreads(String key, DeviceSweepContext ctx) {
+        for (int i = 0; i < globalArray.length / 2; i += SAMPLE_SHIFT) {
+            final int index = i;  // 'index' can be used within the lambda
+
+            Thread thread = new Thread(() -> {
+                try {
+                    if (runningStatus) {
+                        long startop = System.currentTimeMillis();
+
+                        processData(key, ctx, index);
+
+                        long endop = System.currentTimeMillis();
+
+                        System.out.println("Execution time: " + (endop - startop) + " ms");
+
+                        op_counter++;
+
+                        if (op_counter >= (globalArray.length / 4) - 2) {
+                            runningStatus = false;
+
+                            XYSeries phase_series_new = new XYSeries("Phase Data");
+
+                            if (phase_dataset.getSeriesCount() > 0) {
+                                phase_dataset.removeAllSeries();
+                            }
+
+                            long nonNegativeCount = Arrays.stream(phaseArray)
+                                    .filter(element -> element != -1)
+                                    .count();
+
+                            for (int j = 0; j < nonNegativeCount; j++) {
+                                phase_series_new.add(j + 1, phaseArray[j]);
+                            }
+
+                            if (phase_dataset.getSeriesCount() == 0) {
+                                phase_dataset.addSeries(phase_series_new);
+
+                                synchronized (this) {
+                                    if (phaseCycles.size() < MAX_CYCLES) {
+                                        // Extract phase data from phase_series_new and add to phaseCycles
+                                        double[] phaseData = new double[phase_series_new.getItemCount()];
+
+                                        for (int p = 0; p < phase_series_new.getItemCount(); p++) {  // Fix variable name from 'i' to 'p'
+                                            phaseData[p] = phase_series_new.getY(p).doubleValue();  // Assuming getY() returns the phase value
+                                        }
+
+                                        phaseCycles.add(phaseData);  // Add phase data to phaseCycles
+                                    }
+                                }
+                            }
+
+                            Arrays.fill(phaseArray, -1);
+
+                            offset_counter = 0;
+                            op_counter = 0;
+
+                            runningStatus = true;
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            });
+
+            thread.start();
+        }
+    }
+    
     private void processData(String key, DeviceSweepContext ctx, int sample_shift) {
 
     	int start = sample_shift;
@@ -1179,6 +1183,10 @@ public class sweep implements multiUsbManager.UsbHelperListener{
 	        spectrumPanels.get(0).updateSpectrum(finalFreq, finalAmp);
 
     }
+    
+    
+    
+    
     public void writeIQToCSV(String filename) throws IOException {
 
         BufferedWriter writer = new BufferedWriter(new FileWriter(filename));
